@@ -1,0 +1,30 @@
+# binaries
+bin/
+*.exe
+*.out
+*.test
+
+# Go build artifacts
+*.a
+
+# env files
+.env
+
+# OS files
+.DS_Store
+
+# SQLite runtime files
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# Docker
+docker-data/
+
+# VSCode
+.vscode/
+
+# logs
+*.log

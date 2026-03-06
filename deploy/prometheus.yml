@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: "jetqueue-api"
+    static_configs:
+      - targets: ["jetqueue-api:2112"]
+
+  - job_name: "jetqueue-worker"
+    static_configs:
+      - targets: ["jetqueue-worker:2113"]

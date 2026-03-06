@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package jetqueue.v1;
+
+option go_package = "github.com/hruturajbabar/jetqueue/proto;jetqueuev1";
+
+service JetQueue {
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+  rpc GetJob(GetJobRequest) returns (GetJobResponse);
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+}
+
+message SubmitJobRequest {
+  string queue = 1;
+  string type = 2;
+  string payload_json = 3;
+  string idempotency_key = 4;
+  int32 max_attempts = 5;
+}
+
+message SubmitJobResponse {
+  string job_id = 1;
+  bool deduped = 2;
+}
+
+message GetJobRequest { string job_id = 1; }
+message GetJobResponse { Job job = 1; }
+
+message ListJobsRequest {
+  string queue = 1;
+  int32 limit = 2;
+  string status = 3;
+}
+
+message ListJobsResponse { repeated Job jobs = 1; }
+
+message Job {
+  string job_id = 1;
+  string queue = 2;
+  string type = 3;
+  string payload_json = 4;
+  string status = 5;
+  int32 attempt = 6;
+  int32 max_attempts = 7;
+  string last_error = 8;
+  int64 created_at_unix = 9;
+  int64 updated_at_unix = 10;
+}

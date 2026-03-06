@@ -1,0 +1,58 @@
+services:
+  nats:
+    image: nats:2.10
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats-data:/data
+
+  prometheus:
+    image: prom/prometheus:v2.53.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - jetqueue-api
+      - jetqueue-worker
+
+  jetqueue-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    environment:
+      JETQUEUE_NATS_URL: nats://nats:4222
+      JETQUEUE_SQLITE_PATH: /data/jetqueue.db
+      JETQUEUE_GRPC_ADDR: 0.0.0.0:50051
+      JETQUEUE_METRICS_ADDR: 0.0.0.0:2112
+      JETQUEUE_QUEUE_DEFAULT: default
+    ports:
+      - "50051:50051"
+      - "2112:2112"
+    volumes:
+      - jetqueue-data:/data
+    depends_on:
+      - nats
+
+  jetqueue-worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    environment:
+      JETQUEUE_NATS_URL: nats://nats:4222
+      JETQUEUE_SQLITE_PATH: /data/jetqueue.db
+      JETQUEUE_METRICS_ADDR: 0.0.0.0:2113
+      JETQUEUE_WORKER_CONCURRENCY: "4"
+      JETQUEUE_QUEUE_DEFAULT: default
+    ports:
+      - "2113:2113"
+    volumes:
+      - jetqueue-data:/data
+    depends_on:
+      - nats
+
+volumes:
+  nats-data:
+  jetqueue-data:
