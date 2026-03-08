@@ -20,6 +20,7 @@ import (
 	"github.com/hruturajbabar/jetqueue/internal/metrics"
 	"github.com/hruturajbabar/jetqueue/internal/queue"
 	"github.com/hruturajbabar/jetqueue/internal/store"
+	"github.com/hruturajbabar/jetqueue/internal/types"
 	pb "github.com/hruturajbabar/jetqueue/proto"
 )
 
@@ -29,16 +30,6 @@ type server struct {
 	st  *store.Store
 	met *metrics.Metrics
 	cfg config.Config
-}
-
-type JobMsg struct {
-	JobID       string `json:"job_id"`
-	Queue       string `json:"queue"`
-	Type        string `json:"type"`
-	PayloadJSON string `json:"payload_json"`
-	Attempt     int    `json:"attempt"`
-	MaxAttempts int    `json:"max_attempts"`
-	CreatedAt   int64  `json:"created_at_unix"`
 }
 
 func main() {
@@ -142,7 +133,7 @@ func (s *server) SubmitJob(ctx context.Context, req *pb.SubmitJobRequest) (*pb.S
 	jobID := uuid.NewString()
 	now := time.Now().Unix()
 
-	msg := JobMsg{
+	msg := types.JobMsg{
 		JobID:       jobID,
 		Queue:       queueName,
 		Type:        jobType,

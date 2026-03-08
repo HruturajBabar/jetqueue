@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/hruturajbabar/jetqueue/internal/types"
 	"github.com/mattn/go-sqlite3"
 )
 
@@ -24,6 +25,7 @@ type CreateJobResult struct {
 }
 
 var ErrBadInput = errors.New("bad input")
+var ErrInvalidStateTransition = errors.New("invalid job state transition")
 
 func (s *Store) CreateJobWithIdempotencyAndOutbox(ctx context.Context, in CreateJobInput, outboxTopic string, outboxPayload string) (CreateJobResult, error) {
 	if in.JobID == "" || in.Queue == "" || in.Type == "" {
@@ -83,4 +85,38 @@ VALUES(?, ?, ?, ?, 'queued', 0, ?, '', ?, ?)
 		return CreateJobResult{}, err
 	}
 	return CreateJobResult{JobID: in.JobID, Deduped: false}, nil
+}
+
+func (s *Store) updateJobStatus(ctx context.Context, jobId string, status types.JobStatus, lastStatus types.JobStatus, lastError string) error {
+	res, err := s.DB.ExecContext(ctx, `
+UPDATE jobs
+SET status = ?, last_error = ?, updated_at_unix = ?
+WHERE job_id = ? and status = ?
+`, status, lastError, time.Now().Unix(), jobId, lastStatus)
+	if err != nil {
+		return err
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rows == 0 {
+		return ErrInvalidStateTransition
+	}
+
+	return nil
+}
+
+func (s *Store) MarkJobRunning(ctx context.Context, jobId string) error {
+	return s.updateJobStatus(ctx, jobId, types.StatusRunning, types.StatusQueued, "")
+}
+
+func (s *Store) MarkJobSucceeded(ctx context.Context, jobId string) error {
+	return s.updateJobStatus(ctx, jobId, types.StatusSucceeded, types.StatusRunning, "")
+}
+
+func (s *Store) MarkJobFailed(ctx context.Context, jobId string, lastError string) error {
+	return s.updateJobStatus(ctx, jobId, types.StatusFailed, types.StatusRunning, lastError)
 }

@@ -35,3 +35,5 @@ VALUES(?, ?)
 `, msgID, time.Now().Unix())
 	return err
 }
+
+// dedupe logic

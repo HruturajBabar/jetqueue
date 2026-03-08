@@ -22,3 +22,21 @@ type Job struct {
 	CreatedAt   int64
 	UpdatedAt   int64
 }
+
+type JobMsg struct {
+	JobID       string `json:"job_id"`
+	Queue       string `json:"queue"`
+	Type        string `json:"type"`
+	PayloadJSON string `json:"payload_json"`
+	Attempt     int    `json:"attempt"`
+	MaxAttempts int    `json:"max_attempts"`
+	CreatedAt   int64  `json:"created_at_unix"`
+}
+
+type EchoPayload struct {
+	Message string `json:"message"`
+}
+
+type SleepPayload struct {
+	DurationMS int `json:"duration_ms"`
+}
