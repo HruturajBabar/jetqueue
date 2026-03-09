@@ -3,11 +3,12 @@ package types
 type JobStatus string
 
 const (
-	StatusQueued    JobStatus = "queued"
-	StatusRunning   JobStatus = "running"
-	StatusSucceeded JobStatus = "succeeded"
-	StatusFailed    JobStatus = "failed"
-	StatusDLQ       JobStatus = "dlq"
+	StatusQueued         JobStatus = "queued"
+	StatusRunning        JobStatus = "running"
+	StatusSucceeded      JobStatus = "succeeded"
+	StatusRetryScheduled JobStatus = "retry_scheduled"
+	StatusFailed         JobStatus = "failed"
+	StatusDLQ            JobStatus = "dlq"
 )
 
 type Job struct {

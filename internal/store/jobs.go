@@ -87,12 +87,19 @@ VALUES(?, ?, ?, ?, 'queued', 0, ?, '', ?, ?)
 	return CreateJobResult{JobID: in.JobID, Deduped: false}, nil
 }
 
-func (s *Store) updateJobStatus(ctx context.Context, jobId string, status types.JobStatus, lastStatus types.JobStatus, lastError string) error {
+func (s *Store) updateJobState(
+	ctx context.Context,
+	jobId string,
+	newStatus types.JobStatus,
+	fromStatus types.JobStatus,
+	attempt int,
+	lastError string,
+) error {
 	res, err := s.DB.ExecContext(ctx, `
 UPDATE jobs
-SET status = ?, last_error = ?, updated_at_unix = ?
+SET status = ?, attempt = ?, last_error = ?, updated_at_unix = ?
 WHERE job_id = ? and status = ?
-`, status, lastError, time.Now().Unix(), jobId, lastStatus)
+`, newStatus, attempt, lastError, time.Now().Unix(), jobId, fromStatus)
 	if err != nil {
 		return err
 	}
@@ -109,14 +116,36 @@ WHERE job_id = ? and status = ?
 	return nil
 }
 
-func (s *Store) MarkJobRunning(ctx context.Context, jobId string) error {
-	return s.updateJobStatus(ctx, jobId, types.StatusRunning, types.StatusQueued, "")
+func (s *Store) MarkJobRunning(ctx context.Context, jobId string, attempt int) error {
+	res, err := s.DB.ExecContext(ctx, `
+UPDATE jobs
+SET status = ?, attempt = ?, last_error = '', updated_at_unix = ?
+WHERE job_id = ? AND status IN (?, ?)
+`, types.StatusRunning, attempt, time.Now().Unix(), jobId, types.StatusQueued, types.StatusRetryScheduled)
+	if err != nil {
+		return err
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rows == 0 {
+		return ErrInvalidStateTransition
+	}
+
+	return nil
 }
 
-func (s *Store) MarkJobSucceeded(ctx context.Context, jobId string) error {
-	return s.updateJobStatus(ctx, jobId, types.StatusSucceeded, types.StatusRunning, "")
+func (s *Store) MarkJobSucceeded(ctx context.Context, jobId string, attempt int) error {
+	return s.updateJobState(ctx, jobId, types.StatusSucceeded, types.StatusRunning, attempt, "")
 }
 
-func (s *Store) MarkJobFailed(ctx context.Context, jobId string, lastError string) error {
-	return s.updateJobStatus(ctx, jobId, types.StatusFailed, types.StatusRunning, lastError)
+func (s *Store) MarkJobFailed(ctx context.Context, jobId string, attempt int, lastError string) error {
+	return s.updateJobState(ctx, jobId, types.StatusFailed, types.StatusRunning, attempt, lastError)
+}
+
+func (s *Store) MarkJobRetryScheduled(ctx context.Context, jobId string, attempt int, lastError string) error {
+	return s.updateJobState(ctx, jobId, types.StatusRetryScheduled, types.StatusRunning, attempt, lastError)
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/hruturajbabar/jetqueue/internal/backoff"
 	"github.com/hruturajbabar/jetqueue/internal/config"
 	"github.com/hruturajbabar/jetqueue/internal/metrics"
 	"github.com/hruturajbabar/jetqueue/internal/queue"
@@ -107,6 +108,16 @@ func handleMessage(ctx context.Context, st *store.Store, msg *nats.Msg) error {
 
 	log.Printf("worker: received job id=%s queue=%s type=%s", job.JobID, job.Queue, job.Type)
 
+	meta, err := msg.Metadata()
+	if err != nil {
+		return err
+	}
+
+	attempt := int(meta.NumDelivered) - 1
+	if attempt < 0 {
+		attempt = 0
+	}
+
 	processed, err := st.HasProcessedMessage(ctx, job.JobID)
 	if err != nil {
 		return err
@@ -119,18 +130,57 @@ func handleMessage(ctx context.Context, st *store.Store, msg *nats.Msg) error {
 		return nil
 	}
 
-	if err := st.MarkJobRunning(ctx, job.JobID); err != nil {
+	if err := st.MarkJobRunning(ctx, job.JobID, attempt); err != nil {
 		return err
 	}
 
 	if err := executeJob(ctx, job); err != nil {
-		if ferr := st.MarkJobFailed(ctx, job.JobID, err.Error()); ferr != nil {
+		nextAttempt := attempt + 1
+		if nextAttempt < job.MaxAttempts {
+			delay := backoff.Compute(attempt)
+
+			if ferr := st.MarkJobRetryScheduled(ctx, job.JobID, nextAttempt, err.Error()); ferr != nil {
+				return ferr
+			}
+
+			log.Printf(
+				"worker: retrying job id=%s type=%s attempt=%d max_attempts=%d delay=%s error=%v",
+				job.JobID,
+				job.Type,
+				nextAttempt,
+				job.MaxAttempts,
+				delay,
+				err,
+			)
+
+			if err := msg.NakWithDelay(delay); err != nil {
+				return err
+			}
+
+			return nil
+		}
+
+		if ferr := st.MarkJobFailed(ctx, job.JobID, nextAttempt, err.Error()); ferr != nil {
 			return ferr
 		}
-		return err
+
+		log.Printf(
+			"worker: job failed permanently id=%s type=%s attempt=%d max_attempts=%d error=%v",
+			job.JobID,
+			job.Type,
+			nextAttempt,
+			job.MaxAttempts,
+			err,
+		)
+
+		if err := msg.Term(); err != nil {
+			return err
+		}
+
+		return nil
 	}
 
-	if err := st.MarkJobSucceeded(ctx, job.JobID); err != nil {
+	if err := st.MarkJobSucceeded(ctx, job.JobID, attempt); err != nil {
 		return err
 	}
 
