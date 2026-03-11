@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -87,14 +88,22 @@ func runWorker(ctx context.Context, st *store.Store, q *queue.Client) error {
 			return err
 		}
 		for _, msg := range msgs {
-			if err := handleMessage(ctx, st, msg); err != nil {
+			if err := handleMessage(ctx, st, q, msg); err != nil {
 				log.Printf("worker: handle message error: %v", err)
 			}
 		}
 	}
 }
 
-func handleMessage(ctx context.Context, st *store.Store, msg *nats.Msg) error {
+func handleMessage(ctx context.Context, st *store.Store, q *queue.Client, msg *nats.Msg) error {
+	if msg.Subject == queue.DLQSubject {
+		log.Printf("worker: skipping dlq message subject=%s", msg.Subject)
+		if err := msg.Ack(); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	var job types.JobMsg
 	if err := json.Unmarshal(msg.Data, &job); err != nil {
 		log.Printf("worker: invalid message JSON: %v", err)
@@ -164,8 +173,24 @@ func handleMessage(ctx context.Context, st *store.Store, msg *nats.Msg) error {
 			return ferr
 		}
 
+		dlqMsg := types.DLQMsg{
+			JobID:           job.JobID,
+			Queue:           job.Queue,
+			Type:            job.Type,
+			PayloadJSON:     job.PayloadJSON,
+			Attempt:         nextAttempt,
+			MaxAttempts:     job.MaxAttempts,
+			FailedAtUnix:    time.Now().Unix(),
+			LastError:       err.Error(),
+			OriginalSubject: msg.Subject,
+		}
+
+		if derr := q.PublishDLQ(ctx, dlqMsg); derr != nil {
+			return derr
+		}
+
 		log.Printf(
-			"worker: job failed permanently id=%s type=%s attempt=%d max_attempts=%d error=%v",
+			"worker: job sent to DLQ id=%s type=%s attempt=%d max_attempts=%d error=%v",
 			job.JobID,
 			job.Type,
 			nextAttempt,
@@ -220,6 +245,6 @@ func executeJob(ctx context.Context, job types.JobMsg) error {
 			return nil
 		}
 	default:
-		return errors.New("unknown job type: " + job.Type)
+		return fmt.Errorf("unknown job type: %s", job.Type)
 	}
 }

@@ -2,12 +2,16 @@ package queue
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"time"
 
+	"github.com/hruturajbabar/jetqueue/internal/types"
 	"github.com/nats-io/nats.go"
 )
 
 const StreamName = "JETQUEUE_JOBS"
+const DLQSubject = "jobs.dlq"
 
 type Client struct {
 	NC *nats.Conn
@@ -46,4 +50,17 @@ func (c *Client) EnsureStream() error {
 func (c *Client) Publish(ctx context.Context, subject string, data []byte) error {
 	_, err := c.JS.Publish(subject, data, nats.Context(ctx))
 	return err
+}
+
+func (c *Client) PublishDLQ(ctx context.Context, msg types.DLQMsg) error {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal dlq message: %w", err)
+	}
+
+	if err := c.Publish(ctx, DLQSubject, data); err != nil {
+		return fmt.Errorf("publish dlq message: %w", err)
+	}
+
+	return nil
 }

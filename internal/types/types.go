@@ -41,3 +41,15 @@ type EchoPayload struct {
 type SleepPayload struct {
 	DurationMS int `json:"duration_ms"`
 }
+
+type DLQMsg struct {
+	JobID           string `json:"job_id"`
+	Queue           string `json:"queue"`
+	Type            string `json:"type"`
+	PayloadJSON     string `json:"payload_json"`
+	Attempt         int    `json:"attempt"`
+	MaxAttempts     int    `json:"max_attempts"`
+	FailedAtUnix    int64  `json:"failed_at_unix"`
+	LastError       string `json:"last_error"`
+	OriginalSubject string `json:"original_subject"`
+}
