@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/hruturajbabar/jetqueue/internal/types"
@@ -26,6 +27,7 @@ type CreateJobResult struct {
 
 var ErrBadInput = errors.New("bad input")
 var ErrInvalidStateTransition = errors.New("invalid job state transition")
+var ErrJobNotFound = errors.New("no job found")
 
 func (s *Store) CreateJobWithIdempotencyAndOutbox(ctx context.Context, in CreateJobInput, outboxTopic string, outboxPayload string) (CreateJobResult, error) {
 	if in.JobID == "" || in.Queue == "" || in.Type == "" {
@@ -148,4 +150,107 @@ func (s *Store) MarkJobFailed(ctx context.Context, jobId string, attempt int, la
 
 func (s *Store) MarkJobRetryScheduled(ctx context.Context, jobId string, attempt int, lastError string) error {
 	return s.updateJobState(ctx, jobId, types.StatusRetryScheduled, types.StatusRunning, attempt, lastError)
+}
+
+func (s *Store) GetJobByID(ctx context.Context, jobID string) (*types.Job, error) {
+	job := &types.Job{}
+
+	err := s.DB.QueryRowContext(ctx, `
+SELECT 
+	job_id, 
+	queue,
+	type,
+	payload_json,
+	status,
+	attempt,
+	max_attempts,
+	COALESCE(last_error, ''),
+	created_at_unix,
+	updated_at_unix
+FROM jobs
+WHERE job_id = ?
+`, jobID).Scan(
+		&job.JobID,
+		&job.Queue,
+		&job.Type,
+		&job.PayloadJSON,
+		&job.Status,
+		&job.Attempt,
+		&job.MaxAttempts,
+		&job.LastError,
+		&job.CreatedAt,
+		&job.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrJobNotFound
+		}
+		return nil, err
+	}
+	return job, nil
+}
+
+func (s *Store) ListJobs(ctx context.Context, queue string, status string, limit int) ([]*types.Job, error) {
+	query := `
+SELECT 
+	job_id, 
+	queue,
+	type,
+	payload_json,
+	status,
+	attempt,
+	max_attempts,
+	COALESCE(last_error, ''),
+	created_at_unix,
+	updated_at_unix
+FROM jobs
+`
+	var conditions []string
+	var args []any
+
+	if queue != "" {
+		conditions = append(conditions, "queue = ?")
+		args = append(args, queue)
+	}
+	if status != "" {
+		conditions = append(conditions, "status = ?")
+		args = append(args, status)
+	}
+	if len(conditions) > 0 {
+		query += "WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY created_at_unix ORDER DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	jobs := []*types.Job{}
+	for rows.Next() {
+		var job types.Job
+		err := rows.Scan(
+			&job.JobID,
+			&job.Queue,
+			&job.Type,
+			&job.PayloadJSON,
+			&job.Status,
+			&job.Attempt,
+			&job.MaxAttempts,
+			&job.LastError,
+			&job.CreatedAt,
+			&job.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, &job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return jobs, nil
 }

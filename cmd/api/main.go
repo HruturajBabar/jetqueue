@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net"
 	"net/http"
@@ -109,8 +110,6 @@ func outboxPublisher(cfg config.Config, st *store.Store, q *queue.Client) {
 	}
 }
 
-// ---- gRPC handlers ----
-
 func (s *server) SubmitJob(ctx context.Context, req *pb.SubmitJobRequest) (*pb.SubmitJobResponse, error) {
 	queueName := strings.TrimSpace(req.GetQueue())
 	if queueName == "" {
@@ -158,7 +157,7 @@ func (s *server) SubmitJob(ctx context.Context, req *pb.SubmitJobRequest) (*pb.S
 		IdempotencyKey: strings.TrimSpace(req.GetIdempotencyKey()),
 	}, subject, string(b))
 	if err != nil {
-		if err == store.ErrBadInput {
+		if errors.Is(err, store.ErrBadInput) {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		return nil, status.Errorf(codes.Internal, "create job: %v", err)
@@ -173,11 +172,61 @@ func (s *server) SubmitJob(ctx context.Context, req *pb.SubmitJobRequest) (*pb.S
 }
 
 func (s *server) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.GetJobResponse, error) {
-	// Day 5
-	return &pb.GetJobResponse{}, nil
+	jobID := strings.TrimSpace(req.GetJobId())
+	if jobID == "" {
+		return nil, status.Error(codes.InvalidArgument, "job_id is required")
+	}
+
+	job, err := s.st.GetJobByID(ctx, jobID)
+	if err != nil {
+		if errors.Is(err, store.ErrJobNotFound) {
+			return nil, status.Error(codes.NotFound, store.ErrJobNotFound.Error())
+		}
+		return nil, status.Error(codes.Internal, "failed to fetch job")
+	}
+
+	return &pb.GetJobResponse{
+		Job: toProtoJob(job),
+	}, nil
 }
 
 func (s *server) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb.ListJobsResponse, error) {
-	// Day 5
-	return &pb.ListJobsResponse{}, nil
+	queue := strings.TrimSpace(req.GetQueue())
+	jobStatus := strings.TrimSpace(req.GetStatus())
+
+	limit := int(req.GetLimit())
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	jobs, err := s.st.ListJobs(ctx, queue, jobStatus, limit)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to list jobs")
+	}
+
+	var res []*pb.Job
+	for _, job := range jobs {
+		res = append(res, toProtoJob(job))
+	}
+	return &pb.ListJobsResponse{
+		Jobs: res,
+	}, nil
+}
+
+func toProtoJob(job *types.Job) *pb.Job {
+	return &pb.Job{
+		JobId:         job.JobID,
+		Queue:         job.Queue,
+		Type:          job.Type,
+		PayloadJson:   job.PayloadJSON,
+		Status:        string(job.Status),
+		Attempt:       int32(job.Attempt),
+		MaxAttempts:   int32(job.MaxAttempts),
+		LastError:     job.LastError,
+		CreatedAtUnix: job.CreatedAt,
+		UpdatedAtUnix: job.UpdatedAt,
+	}
 }
