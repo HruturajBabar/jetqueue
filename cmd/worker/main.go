@@ -7,7 +7,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"strconv"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -25,7 +29,8 @@ import (
 func main() {
 	cfg := config.Load()
 
-	if _, err := strconv.Atoi(cfg.WorkerConc); err != nil {
+	workerConc, err := strconv.Atoi(cfg.WorkerConc)
+	if err != nil || workerConc <= 0 {
 		log.Fatalf("bad JETQUEUE_WORKER_CONCURRENCY=%q: %v", cfg.WorkerConc, err)
 	}
 
@@ -43,11 +48,14 @@ func main() {
 	}
 
 	reg := prometheus.NewRegistry()
-	_ = metrics.New(reg)
+	met := metrics.New(reg)
 	go serveMetrics("worker", cfg.MetricsAddr, reg)
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	log.Printf("worker: starting consumer loop")
-	if err := runWorker(context.Background(), st, q); err != nil {
+	if err := runWorker(ctx, st, q, met, workerConc); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -61,7 +69,7 @@ func serveMetrics(name, addr string, reg *prometheus.Registry) {
 	}
 }
 
-func runWorker(ctx context.Context, st *store.Store, q *queue.Client) error {
+func runWorker(ctx context.Context, st *store.Store, q *queue.Client, met *metrics.Metrics, workerConc int) error {
 	consumerName := "jetqueue-worker"
 	sub, err := q.JS.PullSubscribe(
 		"jobs.*",
@@ -73,29 +81,42 @@ func runWorker(ctx context.Context, st *store.Store, q *queue.Client) error {
 		return err
 	}
 
+	sem := make(chan struct{}, workerConc)
+	var wg sync.WaitGroup
+
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			// Keep the worker running to process messages.
+			log.Printf("worker: shutdown signal received, draining in-flight jobs")
+			wg.Wait()
+			log.Printf("worker: drain complete, exiting")
+			return nil
+		case sem <- struct{}{}:
+			// reserved one execution slot
 		}
 		msgs, err := sub.Fetch(1, nats.MaxWait(2*time.Second))
 		if err != nil {
+			<-sem // release reserved slot
 			if errors.Is(err, nats.ErrTimeout) {
 				continue // No messages, loop again
 			}
 			return err
 		}
 		for _, msg := range msgs {
-			if err := handleMessage(ctx, st, q, msg); err != nil {
-				log.Printf("worker: handle message error: %v", err)
-			}
+			wg.Add(1)
+			go func(m *nats.Msg) {
+				defer wg.Done()
+				defer func() { <-sem }()
+
+				if err := handleMessage(ctx, st, q, m, met); err != nil {
+					log.Printf("worker: handle message error: %v", err)
+				}
+			}(msg)
 		}
 	}
 }
 
-func handleMessage(ctx context.Context, st *store.Store, q *queue.Client, msg *nats.Msg) error {
+func handleMessage(ctx context.Context, st *store.Store, q *queue.Client, msg *nats.Msg, met *metrics.Metrics) error {
 	if msg.Subject == queue.DLQSubject {
 		log.Printf("worker: skipping dlq message subject=%s", msg.Subject)
 		if err := msg.Ack(); err != nil {
@@ -139,9 +160,19 @@ func handleMessage(ctx context.Context, st *store.Store, q *queue.Client, msg *n
 		return nil
 	}
 
+	labels := []string{job.Queue, job.Type}
+	start := time.Now()
+
 	if err := st.MarkJobRunning(ctx, job.JobID, attempt); err != nil {
 		return err
 	}
+	met.Started.WithLabelValues(labels...).Inc()
+	met.Inflight.WithLabelValues(labels...).Inc()
+
+	defer func() {
+		met.Duration.WithLabelValues(labels...).Observe(time.Since(start).Seconds())
+	}()
+	defer met.Inflight.WithLabelValues(labels...).Dec()
 
 	if err := executeJob(ctx, job); err != nil {
 		nextAttempt := attempt + 1
@@ -151,6 +182,7 @@ func handleMessage(ctx context.Context, st *store.Store, q *queue.Client, msg *n
 			if ferr := st.MarkJobRetryScheduled(ctx, job.JobID, nextAttempt, err.Error()); ferr != nil {
 				return ferr
 			}
+			met.Retried.WithLabelValues(labels...).Inc()
 
 			log.Printf(
 				"worker: retrying job id=%s type=%s attempt=%d max_attempts=%d delay=%s error=%v",
@@ -172,6 +204,7 @@ func handleMessage(ctx context.Context, st *store.Store, q *queue.Client, msg *n
 		if ferr := st.MarkJobFailed(ctx, job.JobID, nextAttempt, err.Error()); ferr != nil {
 			return ferr
 		}
+		met.Failed.WithLabelValues(labels...).Inc()
 
 		dlqMsg := types.DLQMsg{
 			JobID:           job.JobID,
@@ -188,6 +221,7 @@ func handleMessage(ctx context.Context, st *store.Store, q *queue.Client, msg *n
 		if derr := q.PublishDLQ(ctx, dlqMsg); derr != nil {
 			return derr
 		}
+		met.DLQ.WithLabelValues(labels...).Inc()
 
 		log.Printf(
 			"worker: job sent to DLQ id=%s type=%s attempt=%d max_attempts=%d error=%v",
@@ -208,6 +242,7 @@ func handleMessage(ctx context.Context, st *store.Store, q *queue.Client, msg *n
 	if err := st.MarkJobSucceeded(ctx, job.JobID, attempt); err != nil {
 		return err
 	}
+	met.Succeeded.WithLabelValues(labels...).Inc()
 
 	if err := st.MarkMessageProcessed(ctx, job.JobID); err != nil {
 		return err

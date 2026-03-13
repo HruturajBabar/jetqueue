@@ -219,7 +219,7 @@ FROM jobs
 	if len(conditions) > 0 {
 		query += "WHERE " + strings.Join(conditions, " AND ")
 	}
-	query += " ORDER BY created_at_unix ORDER DESC LIMIT ?"
+	query += " ORDER BY created_at_unix DESC LIMIT ?"
 	args = append(args, limit)
 
 	rows, err := s.DB.QueryContext(ctx, query, args...)

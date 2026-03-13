@@ -10,6 +10,7 @@ type Metrics struct {
 	Retried   *prometheus.CounterVec
 	DLQ       *prometheus.CounterVec
 	Duration  *prometheus.HistogramVec
+	Inflight  *prometheus.GaugeVec
 }
 
 func New(reg prometheus.Registerer) *Metrics {
@@ -43,6 +44,10 @@ func New(reg prometheus.Registerer) *Metrics {
 			Help:    "Job processing duration in seconds",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"queue", "type"}),
+		Inflight: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "jetqueue_jobs_inflight",
+			Help: "Current number of jobs being processed",
+		}, []string{"queue", "type"}),
 	}
 
 	reg.MustRegister(
@@ -53,6 +58,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		m.Retried,
 		m.DLQ,
 		m.Duration,
+		m.Inflight,
 	)
 
 	return m
