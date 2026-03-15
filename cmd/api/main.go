@@ -91,23 +91,33 @@ func outboxPublisher(cfg config.Config, st *store.Store, q *queue.Client) {
 	ctx := context.Background()
 
 	for range ticker.C {
-		rows, err := st.FetchUnsentOutbox(ctx, 50)
-		if err != nil {
-			log.Printf("api: outbox fetch err: %v", err)
-			continue
-		}
-		for _, r := range rows {
-			// Publish outbox payload exactly as stored
-			subject := r.Topic
-			if err := q.Publish(ctx, subject, []byte(r.PayloadJSON)); err != nil {
-				log.Printf("api: outbox publish err (id=%d): %v", r.ID, err)
-				break
-			}
-			if err := st.MarkOutboxSent(ctx, r.ID); err != nil {
-				log.Printf("api: outbox mark-sent err (id=%d): %v", r.ID, err)
-			}
+		if err := publishOutboxOnce(ctx, st, q, 50); err != nil {
+			log.Printf("api: outbox publish loop err: %v", err)
 		}
 	}
+}
+
+func publishOutboxOnce(ctx context.Context, st *store.Store, q outboxMessagePublisher, limit int) error {
+	rows, err := st.FetchUnsentOutbox(ctx, limit)
+	if err != nil {
+		return err
+	}
+
+	for _, r := range rows {
+		subject := r.Topic
+		if err := q.Publish(ctx, subject, []byte(r.PayloadJSON)); err != nil {
+			return err
+		}
+		if err := st.MarkOutboxSent(ctx, r.ID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+type outboxMessagePublisher interface {
+	Publish(context.Context, string, []byte) error
 }
 
 func (s *server) SubmitJob(ctx context.Context, req *pb.SubmitJobRequest) (*pb.SubmitJobResponse, error) {

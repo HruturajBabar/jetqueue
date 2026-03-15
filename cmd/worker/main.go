@@ -108,7 +108,7 @@ func runWorker(ctx context.Context, st *store.Store, q *queue.Client, met *metri
 				defer wg.Done()
 				defer func() { <-sem }()
 
-				if err := handleMessage(ctx, st, q, m, met); err != nil {
+				if err := handleMessage(ctx, st, q, natsWorkerMessage{msg: m}, met); err != nil {
 					log.Printf("worker: handle message error: %v", err)
 				}
 			}(msg)
@@ -116,9 +116,9 @@ func runWorker(ctx context.Context, st *store.Store, q *queue.Client, met *metri
 	}
 }
 
-func handleMessage(ctx context.Context, st *store.Store, q *queue.Client, msg *nats.Msg, met *metrics.Metrics) error {
-	if msg.Subject == queue.DLQSubject {
-		log.Printf("worker: skipping dlq message subject=%s", msg.Subject)
+func handleMessage(ctx context.Context, st *store.Store, q dlqPublisher, msg workerMessage, met *metrics.Metrics) error {
+	if msg.SubjectName() == queue.DLQSubject {
+		log.Printf("worker: skipping dlq message subject=%s", msg.SubjectName())
 		if err := msg.Ack(); err != nil {
 			return err
 		}
@@ -126,7 +126,7 @@ func handleMessage(ctx context.Context, st *store.Store, q *queue.Client, msg *n
 	}
 
 	var job types.JobMsg
-	if err := json.Unmarshal(msg.Data, &job); err != nil {
+	if err := json.Unmarshal(msg.DataBytes(), &job); err != nil {
 		log.Printf("worker: invalid message JSON: %v", err)
 
 		// ACK bad messages so they don't poison the queue
@@ -138,14 +138,9 @@ func handleMessage(ctx context.Context, st *store.Store, q *queue.Client, msg *n
 
 	log.Printf("worker: received job id=%s queue=%s type=%s", job.JobID, job.Queue, job.Type)
 
-	meta, err := msg.Metadata()
+	attempt, err := msg.DeliveryAttempt()
 	if err != nil {
 		return err
-	}
-
-	attempt := int(meta.NumDelivered) - 1
-	if attempt < 0 {
-		attempt = 0
 	}
 
 	processed, err := st.HasProcessedMessage(ctx, job.JobID)
@@ -215,7 +210,7 @@ func handleMessage(ctx context.Context, st *store.Store, q *queue.Client, msg *n
 			MaxAttempts:     job.MaxAttempts,
 			FailedAtUnix:    time.Now().Unix(),
 			LastError:       err.Error(),
-			OriginalSubject: msg.Subject,
+			OriginalSubject: msg.SubjectName(),
 		}
 
 		if derr := q.PublishDLQ(ctx, dlqMsg); derr != nil {
@@ -282,4 +277,54 @@ func executeJob(ctx context.Context, job types.JobMsg) error {
 	default:
 		return fmt.Errorf("unknown job type: %s", job.Type)
 	}
+}
+
+type workerMessage interface {
+	SubjectName() string
+	DataBytes() []byte
+	DeliveryAttempt() (int, error)
+	Ack() error
+	NakWithDelay(time.Duration) error
+	Term() error
+}
+
+type natsWorkerMessage struct {
+	msg *nats.Msg
+}
+
+type dlqPublisher interface {
+	PublishDLQ(context.Context, types.DLQMsg) error
+}
+
+func (m natsWorkerMessage) SubjectName() string {
+	return m.msg.Subject
+}
+
+func (m natsWorkerMessage) DataBytes() []byte {
+	return m.msg.Data
+}
+
+func (m natsWorkerMessage) DeliveryAttempt() (int, error) {
+	meta, err := m.msg.Metadata()
+	if err != nil {
+		return 0, err
+	}
+
+	attempt := int(meta.NumDelivered) - 1
+	if attempt < 0 {
+		attempt = 0
+	}
+	return attempt, nil
+}
+
+func (m natsWorkerMessage) Ack() error {
+	return m.msg.Ack()
+}
+
+func (m natsWorkerMessage) NakWithDelay(d time.Duration) error {
+	return m.msg.NakWithDelay(d)
+}
+
+func (m natsWorkerMessage) Term() error {
+	return m.msg.Term()
 }
