@@ -42,6 +42,14 @@ type SleepPayload struct {
 	DurationMS int `json:"duration_ms"`
 }
 
+type WebhookPayload struct {
+	URL       string            `json:"url"`
+	Method    string            `json:"method,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Body      string            `json:"body,omitempty"`
+	TimeoutMS int               `json:"timeout_ms,omitempty"`
+}
+
 type DLQMsg struct {
 	JobID           string `json:"job_id"`
 	Queue           string `json:"queue"`

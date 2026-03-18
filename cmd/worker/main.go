@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -116,6 +117,10 @@ func runWorker(ctx context.Context, st *store.Store, q *queue.Client, met *metri
 	}
 }
 
+type natsWorkerMessage struct {
+	msg *nats.Msg
+}
+
 func handleMessage(ctx context.Context, st *store.Store, q dlqPublisher, msg workerMessage, met *metrics.Metrics) error {
 	if msg.SubjectName() == queue.DLQSubject {
 		log.Printf("worker: skipping dlq message subject=%s", msg.SubjectName())
@@ -170,30 +175,33 @@ func handleMessage(ctx context.Context, st *store.Store, q dlqPublisher, msg wor
 	defer met.Inflight.WithLabelValues(labels...).Dec()
 
 	if err := executeJob(ctx, job); err != nil {
+		var te terminalError
 		nextAttempt := attempt + 1
-		if nextAttempt < job.MaxAttempts {
-			delay := backoff.Compute(attempt)
+		if !errors.As(err, &te) {
+			if nextAttempt < job.MaxAttempts {
+				delay := backoff.Compute(attempt)
 
-			if ferr := st.MarkJobRetryScheduled(ctx, job.JobID, nextAttempt, err.Error()); ferr != nil {
-				return ferr
+				if ferr := st.MarkJobRetryScheduled(ctx, job.JobID, nextAttempt, err.Error()); ferr != nil {
+					return ferr
+				}
+				met.Retried.WithLabelValues(labels...).Inc()
+
+				log.Printf(
+					"worker: retrying job id=%s type=%s attempt=%d max_attempts=%d delay=%s error=%v",
+					job.JobID,
+					job.Type,
+					nextAttempt,
+					job.MaxAttempts,
+					delay,
+					err,
+				)
+
+				if err := msg.NakWithDelay(delay); err != nil {
+					return err
+				}
+
+				return nil
 			}
-			met.Retried.WithLabelValues(labels...).Inc()
-
-			log.Printf(
-				"worker: retrying job id=%s type=%s attempt=%d max_attempts=%d delay=%s error=%v",
-				job.JobID,
-				job.Type,
-				nextAttempt,
-				job.MaxAttempts,
-				delay,
-				err,
-			)
-
-			if err := msg.NakWithDelay(delay); err != nil {
-				return err
-			}
-
-			return nil
 		}
 
 		if ferr := st.MarkJobFailed(ctx, job.JobID, nextAttempt, err.Error()); ferr != nil {
@@ -251,34 +259,6 @@ func handleMessage(ctx context.Context, st *store.Store, q dlqPublisher, msg wor
 	return nil
 }
 
-func executeJob(ctx context.Context, job types.JobMsg) error {
-	switch job.Type {
-	case "echo":
-		var payload types.EchoPayload
-		if err := json.Unmarshal([]byte(job.PayloadJSON), &payload); err != nil {
-			return err
-		}
-		log.Printf("worker: echo job id=%s message=%q", job.JobID, payload.Message)
-		return nil
-	case "sleep":
-		var payload types.SleepPayload
-		if err := json.Unmarshal([]byte(job.PayloadJSON), &payload); err != nil {
-			return err
-		}
-
-		log.Printf("worker: sleep job id=%s duration_ms=%d", job.JobID, payload.DurationMS)
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(payload.DurationMS) * time.Millisecond):
-			return nil
-		}
-	default:
-		return fmt.Errorf("unknown job type: %s", job.Type)
-	}
-}
-
 type workerMessage interface {
 	SubjectName() string
 	DataBytes() []byte
@@ -288,12 +268,16 @@ type workerMessage interface {
 	Term() error
 }
 
-type natsWorkerMessage struct {
-	msg *nats.Msg
+func (m natsWorkerMessage) Ack() error {
+	return m.msg.Ack()
 }
 
-type dlqPublisher interface {
-	PublishDLQ(context.Context, types.DLQMsg) error
+func (m natsWorkerMessage) NakWithDelay(d time.Duration) error {
+	return m.msg.NakWithDelay(d)
+}
+
+func (m natsWorkerMessage) Term() error {
+	return m.msg.Term()
 }
 
 func (m natsWorkerMessage) SubjectName() string {
@@ -317,14 +301,106 @@ func (m natsWorkerMessage) DeliveryAttempt() (int, error) {
 	return attempt, nil
 }
 
-func (m natsWorkerMessage) Ack() error {
-	return m.msg.Ack()
+type dlqPublisher interface {
+	PublishDLQ(context.Context, types.DLQMsg) error
 }
 
-func (m natsWorkerMessage) NakWithDelay(d time.Duration) error {
-	return m.msg.NakWithDelay(d)
+func executeJob(ctx context.Context, job types.JobMsg) error {
+	switch job.Type {
+	case "echo":
+		var payload types.EchoPayload
+		if err := json.Unmarshal([]byte(job.PayloadJSON), &payload); err != nil {
+			return terminalError{err: err}
+		}
+		log.Printf("worker: echo job id=%s message=%q", job.JobID, payload.Message)
+		return nil
+	case "sleep":
+		var payload types.SleepPayload
+		if err := json.Unmarshal([]byte(job.PayloadJSON), &payload); err != nil {
+			return terminalError{err: err}
+		}
+
+		log.Printf("worker: sleep job id=%s duration_ms=%d", job.JobID, payload.DurationMS)
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(payload.DurationMS) * time.Millisecond):
+			return nil
+		}
+	case "webhook":
+		var payload types.WebhookPayload
+		if err := json.Unmarshal([]byte(job.PayloadJSON), &payload); err != nil {
+			return terminalError{err: err}
+		}
+		if payload.URL == "" {
+			return terminalError{err: ErrBadInput}
+		}
+		method := payload.Method
+		if method == "" {
+			method = "POST"
+		}
+		timeoutMS := payload.TimeoutMS
+		if timeoutMS <= 0 {
+			timeoutMS = 5000
+		}
+
+		ctx, cancel := context.WithTimeout(ctx, time.Millisecond*time.Duration(timeoutMS))
+		defer cancel()
+
+		var req *http.Request
+		var err error
+		if payload.Body == "" {
+			req, err = http.NewRequestWithContext(ctx, method, payload.URL, nil)
+		} else {
+			req, err = http.NewRequestWithContext(ctx, method, payload.URL, strings.NewReader(payload.Body))
+		}
+		if err != nil {
+			return terminalError{err: err}
+		}
+
+		if payload.Headers != nil {
+			for key, val := range payload.Headers {
+				req.Header.Set(key, val)
+			}
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+
+		defer resp.Body.Close()
+		if resp.StatusCode >= 500 {
+			return fmt.Errorf("webhook returned retryable status: %d", resp.StatusCode)
+		}
+		if resp.StatusCode >= 400 {
+			switch resp.StatusCode {
+			case 429:
+				return fmt.Errorf("webhook returned retryable status: %d", resp.StatusCode)
+			case 408:
+				return fmt.Errorf("webhook returned retryable status: %d", resp.StatusCode)
+			case 425:
+				return fmt.Errorf("webhook returned retryable status: %d", resp.StatusCode)
+			default:
+				return terminalError{err: fmt.Errorf("webhook returned status: %d", resp.StatusCode)}
+			}
+		}
+		return nil
+
+	default:
+		return terminalError{err: fmt.Errorf("unknown job type: %s", job.Type)}
+	}
 }
 
-func (m natsWorkerMessage) Term() error {
-	return m.msg.Term()
+type terminalError struct {
+	err error
+}
+
+var (
+	ErrBadInput = errors.New("bad input")
+)
+
+func (e terminalError) Error() string {
+	return e.err.Error()
 }
