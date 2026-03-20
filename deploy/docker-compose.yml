@@ -44,7 +44,7 @@ services:
       JETQUEUE_NATS_URL: nats://nats:4222
       JETQUEUE_SQLITE_PATH: /data/jetqueue.db
       JETQUEUE_METRICS_ADDR: 0.0.0.0:2113
-      JETQUEUE_WORKER_CONCURRENCY: "4"
+      JETQUEUE_WORKER_CONCURRENCY: "10"
       JETQUEUE_QUEUE_DEFAULT: default
     ports:
       - "2113:2113"
