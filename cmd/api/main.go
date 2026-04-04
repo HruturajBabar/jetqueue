@@ -228,15 +228,17 @@ func (s *server) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb.Lis
 
 func toProtoJob(job *types.Job) *pb.Job {
 	return &pb.Job{
-		JobId:         job.JobID,
-		Queue:         job.Queue,
-		Type:          job.Type,
-		PayloadJson:   job.PayloadJSON,
-		Status:        string(job.Status),
-		Attempt:       int32(job.Attempt),
-		MaxAttempts:   int32(job.MaxAttempts),
-		LastError:     job.LastError,
-		CreatedAtUnix: job.CreatedAt,
-		UpdatedAtUnix: job.UpdatedAt,
+		JobId:           job.JobID,
+		Queue:           job.Queue,
+		Type:            job.Type,
+		PayloadJson:     job.PayloadJSON,
+		Status:          string(job.Status),
+		Attempt:         int32(job.Attempt),
+		MaxAttempts:     int32(job.MaxAttempts),
+		LastError:       job.LastError,
+		CreatedAtUnix:   job.CreatedAt,
+		UpdatedAtUnix:   job.UpdatedAt,
+		CreatedAtUnixMs: job.CreatedAtUnixMS,
+		UpdatedAtUnixMs: job.UpdatedAtUnixMS,
 	}
 }

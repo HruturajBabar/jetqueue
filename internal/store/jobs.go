@@ -43,7 +43,9 @@ func (s *Store) CreateJobWithIdempotencyAndOutbox(ctx context.Context, in Create
 	}
 	defer tx.Rollback()
 
-	now := time.Now().Unix()
+	nowTime := time.Now()
+	now := nowTime.Unix()
+	nowMS := nowTime.UnixMilli()
 
 	// If idempotency key is present: insert mapping first (unique).
 	// If it already exists, return the existing job_id.
@@ -72,9 +74,22 @@ VALUES(?, ?, ?)
 	}
 
 	_, err = tx.ExecContext(ctx, `
-INSERT INTO jobs(job_id, queue, type, payload_json, status, attempt, max_attempts, last_error, created_at_unix, updated_at_unix)
-VALUES(?, ?, ?, ?, 'queued', 0, ?, '', ?, ?)
-`, in.JobID, in.Queue, in.Type, in.PayloadJSON, in.MaxAttempts, now, now)
+INSERT INTO jobs(
+	job_id,
+	queue,
+	type,
+	payload_json,
+	status,
+	attempt,
+	max_attempts,
+	last_error,
+	created_at_unix,
+	updated_at_unix,
+	created_at_unix_ms,
+	updated_at_unix_ms
+)
+VALUES(?, ?, ?, ?, 'queued', 0, ?, '', ?, ?, ?, ?)
+`, in.JobID, in.Queue, in.Type, in.PayloadJSON, in.MaxAttempts, now, now, nowMS, nowMS)
 	if err != nil {
 		return CreateJobResult{}, err
 	}
@@ -97,11 +112,12 @@ func (s *Store) updateJobState(
 	attempt int,
 	lastError string,
 ) error {
+	nowTime := time.Now()
 	res, err := s.DB.ExecContext(ctx, `
 UPDATE jobs
-SET status = ?, attempt = ?, last_error = ?, updated_at_unix = ?
+SET status = ?, attempt = ?, last_error = ?, updated_at_unix = ?, updated_at_unix_ms = ?
 WHERE job_id = ? and status = ?
-`, newStatus, attempt, lastError, time.Now().Unix(), jobId, fromStatus)
+`, newStatus, attempt, lastError, nowTime.Unix(), nowTime.UnixMilli(), jobId, fromStatus)
 	if err != nil {
 		return err
 	}
@@ -119,11 +135,12 @@ WHERE job_id = ? and status = ?
 }
 
 func (s *Store) MarkJobRunning(ctx context.Context, jobId string, attempt int) error {
+	nowTime := time.Now()
 	res, err := s.DB.ExecContext(ctx, `
 UPDATE jobs
-SET status = ?, attempt = ?, last_error = '', updated_at_unix = ?
+SET status = ?, attempt = ?, last_error = '', updated_at_unix = ?, updated_at_unix_ms = ?
 WHERE job_id = ? AND status IN (?, ?)
-`, types.StatusRunning, attempt, time.Now().Unix(), jobId, types.StatusQueued, types.StatusRetryScheduled)
+`, types.StatusRunning, attempt, nowTime.Unix(), nowTime.UnixMilli(), jobId, types.StatusQueued, types.StatusRetryScheduled)
 	if err != nil {
 		return err
 	}
@@ -166,7 +183,9 @@ SELECT
 	max_attempts,
 	COALESCE(last_error, ''),
 	created_at_unix,
-	updated_at_unix
+	updated_at_unix,
+	created_at_unix_ms,
+	updated_at_unix_ms
 FROM jobs
 WHERE job_id = ?
 `, jobID).Scan(
@@ -180,6 +199,8 @@ WHERE job_id = ?
 		&job.LastError,
 		&job.CreatedAt,
 		&job.UpdatedAt,
+		&job.CreatedAtUnixMS,
+		&job.UpdatedAtUnixMS,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -202,7 +223,9 @@ SELECT
 	max_attempts,
 	COALESCE(last_error, ''),
 	created_at_unix,
-	updated_at_unix
+	updated_at_unix,
+	created_at_unix_ms,
+	updated_at_unix_ms
 FROM jobs
 `
 	var conditions []string
@@ -242,6 +265,8 @@ FROM jobs
 			&job.LastError,
 			&job.CreatedAt,
 			&job.UpdatedAt,
+			&job.CreatedAtUnixMS,
+			&job.UpdatedAtUnixMS,
 		)
 		if err != nil {
 			return nil, err

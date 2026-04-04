@@ -12,16 +12,18 @@ const (
 )
 
 type Job struct {
-	JobID       string
-	Queue       string
-	Type        string
-	PayloadJSON string
-	Status      JobStatus
-	Attempt     int
-	MaxAttempts int
-	LastError   string
-	CreatedAt   int64
-	UpdatedAt   int64
+	JobID           string
+	Queue           string
+	Type            string
+	PayloadJSON     string
+	Status          JobStatus
+	Attempt         int
+	MaxAttempts     int
+	LastError       string
+	CreatedAt       int64
+	UpdatedAt       int64
+	CreatedAtUnixMS int64
+	UpdatedAtUnixMS int64
 }
 
 type JobMsg struct {

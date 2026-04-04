@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,24 +17,26 @@ import (
 )
 
 type benchmarkConfig struct {
-	addr         string
-	queue        string
-	jobType      string
-	numJobs      int
-	parallel     int
-	sleepMS      int
-	maxAttempts  int
-	wait         bool
-	pollInterval time.Duration
-	pollTimeout  time.Duration
-	idemPrefix   string
-	echoMessage  string
+	addr          string
+	queue         string
+	jobType       string
+	numJobs       int
+	parallel      int
+	sleepMS       int
+	maxAttempts   int
+	wait          bool
+	pollInterval  time.Duration
+	pollTimeout   time.Duration
+	idemPrefix    string
+	echoMessage   string
+	reportLatency bool
 }
 
 type submitResult struct {
-	jobID   string
-	deduped bool
-	err     error
+	jobID         string
+	deduped       bool
+	submittedAtMS int64
+	err           error
 }
 
 func main() {
@@ -45,7 +48,7 @@ func main() {
 
 	ctx := context.Background()
 
-	conn, err := grpc.NewClient(
+	conn, err := grpc.Dial(
 		cfg.addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
@@ -70,6 +73,7 @@ func main() {
 	var failed int
 	jobIDs := make([]string, 0, len(results))
 
+	submitTimes := make(map[string]int64, len(results))
 	for _, r := range results {
 		if r.err != nil {
 			failed++
@@ -80,6 +84,7 @@ func main() {
 			deduped++
 		}
 		jobIDs = append(jobIDs, r.jobID)
+		submitTimes[r.jobID] = r.submittedAtMS
 	}
 
 	submitRate := 0.0
@@ -99,7 +104,7 @@ func main() {
 	}
 
 	waitStart := time.Now()
-	summary, err := waitForTerminalStates(ctx, client, cfg, jobIDs)
+	summary, completedAt, err := waitForTerminalStates(ctx, client, cfg, jobIDs)
 	waitElapsed := time.Since(waitStart)
 	if err != nil {
 		log.Fatalf("wait mode failed: %v", err)
@@ -116,6 +121,30 @@ func main() {
 	fmt.Printf("timed_out_or_non_terminal: %d\n", summary.pending)
 	if waitElapsed > 0 {
 		fmt.Printf("completion_rate_jobs_per_sec: %.2f\n", float64(summary.completed())/waitElapsed.Seconds())
+	}
+
+	if cfg.reportLatency {
+		latenciesMS := make([]int64, 0, len(jobIDs))
+		for _, jobID := range jobIDs {
+			submittedAtMS, ok1 := submitTimes[jobID]
+			completedAtMS, ok2 := completedAt[jobID]
+			if !ok1 || !ok2 || completedAtMS < submittedAtMS {
+				continue
+			}
+			latenciesMS = append(latenciesMS, completedAtMS-submittedAtMS)
+		}
+
+		ls := computeLatencySummary(latenciesMS)
+
+		fmt.Println()
+		fmt.Println("=== Latency Summary ===")
+		fmt.Printf("count: %d\n", ls.count)
+		fmt.Printf("min_ms: %d\n", ls.minMS)
+		fmt.Printf("p50_ms: %d\n", ls.p50MS)
+		fmt.Printf("p95_ms: %d\n", ls.p95MS)
+		fmt.Printf("p99_ms: %d\n", ls.p99MS)
+		fmt.Printf("max_ms: %d\n", ls.maxMS)
+		fmt.Printf("avg_ms: %.2f\n", ls.avgMS)
 	}
 }
 
@@ -134,6 +163,7 @@ func parseFlags() benchmarkConfig {
 	flag.DurationVar(&cfg.pollTimeout, "poll-timeout", 2*time.Minute, "max wait duration in wait mode")
 	flag.StringVar(&cfg.idemPrefix, "idempotency-prefix", "", "optional idempotency key prefix")
 	flag.StringVar(&cfg.echoMessage, "echo-message", "hello from benchmark", "echo job message")
+	flag.BoolVar(&cfg.reportLatency, "report-latency", false, "report latency percentiles in wait mode")
 
 	flag.Parse()
 	return cfg
@@ -189,6 +219,7 @@ func submitJobs(ctx context.Context, client pb.JetQueueClient, cfg benchmarkConf
 					continue
 				}
 
+				submittedAtMS := time.Now().UnixMilli()
 				resp, err := client.SubmitJob(ctx, req)
 				if err != nil {
 					results[i] = submitResult{err: err}
@@ -196,9 +227,10 @@ func submitJobs(ctx context.Context, client pb.JetQueueClient, cfg benchmarkConf
 				}
 
 				results[i] = submitResult{
-					jobID:   resp.GetJobId(),
-					deduped: resp.GetDeduped(),
-					err:     nil,
+					jobID:         resp.GetJobId(),
+					deduped:       resp.GetDeduped(),
+					submittedAtMS: submittedAtMS,
+					err:           nil,
 				}
 			}
 		}()
@@ -268,6 +300,16 @@ type completionSummary struct {
 	pending       int64
 }
 
+type latencySummary struct {
+	count int
+	minMS int64
+	p50MS int64
+	p95MS int64
+	p99MS int64
+	maxMS int64
+	avgMS float64
+}
+
 func (s completionSummary) completed() int64 {
 	return s.succeeded + s.failed + s.dlq + s.otherTerminal
 }
@@ -277,18 +319,20 @@ func waitForTerminalStates(
 	client pb.JetQueueClient,
 	cfg benchmarkConfig,
 	jobIDs []string,
-) (completionSummary, error) {
+) (completionSummary, map[string]int64, error) {
 	deadline := time.Now().Add(cfg.pollTimeout)
 
 	type state struct {
-		done   bool
-		status string
+		done          bool
+		status        string
+		completedAtMS int64
 	}
 
 	type pollResult struct {
-		jobID  string
-		status string
-		ok     bool
+		jobID         string
+		status        string
+		completedAtMS int64
+		ok            bool
 	}
 
 	states := make(map[string]state, len(jobIDs))
@@ -335,9 +379,10 @@ func waitForTerminalStates(
 				status := strings.TrimSpace(job.GetStatus())
 				if isTerminalStatus(status) {
 					resultsCh <- pollResult{
-						jobID:  id,
-						status: status,
-						ok:     true,
+						jobID:         id,
+						status:        status,
+						completedAtMS: job.GetUpdatedAtUnixMs(),
+						ok:            true,
 					}
 					return
 				}
@@ -354,8 +399,9 @@ func waitForTerminalStates(
 				continue
 			}
 			states[res.jobID] = state{
-				done:   true,
-				status: res.status,
+				done:          true,
+				status:        res.status,
+				completedAtMS: res.completedAtMS,
 			}
 		}
 
@@ -363,11 +409,15 @@ func waitForTerminalStates(
 	}
 
 	var summary completionSummary
-	for _, st := range states {
+	completedAt := make(map[string]int64, len(jobIDs))
+
+	for jobID, st := range states {
 		if !st.done {
 			summary.pending++
 			continue
 		}
+
+		completedAt[jobID] = st.completedAtMS
 
 		switch st.status {
 		case "succeeded":
@@ -381,7 +431,7 @@ func waitForTerminalStates(
 		}
 	}
 
-	return summary, nil
+	return summary, completedAt, nil
 }
 
 func isTerminalStatus(status string) bool {
@@ -391,4 +441,44 @@ func isTerminalStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func computeLatencySummary(latenciesMS []int64) latencySummary {
+	if len(latenciesMS) == 0 {
+		return latencySummary{}
+	}
+
+	sort.Slice(latenciesMS, func(i, j int) bool {
+		return latenciesMS[i] < latenciesMS[j]
+	})
+
+	var sum int64
+	for _, v := range latenciesMS {
+		sum += v
+	}
+
+	return latencySummary{
+		count: len(latenciesMS),
+		minMS: latenciesMS[0],
+		p50MS: percentile(latenciesMS, 0.50),
+		p95MS: percentile(latenciesMS, 0.95),
+		p99MS: percentile(latenciesMS, 0.99),
+		maxMS: latenciesMS[len(latenciesMS)-1],
+		avgMS: float64(sum) / float64(len(latenciesMS)),
+	}
+}
+
+func percentile(sorted []int64, p float64) int64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if p <= 0 {
+		return sorted[0]
+	}
+	if p >= 1 {
+		return sorted[len(sorted)-1]
+	}
+
+	idx := int(float64(len(sorted)-1) * p)
+	return sorted[idx]
 }

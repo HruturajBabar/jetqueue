@@ -342,19 +342,21 @@ func (x *ListJobsResponse) GetJobs() []*Job {
 }
 
 type Job struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	Queue         string                 `protobuf:"bytes,2,opt,name=queue,proto3" json:"queue,omitempty"`
-	Type          string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`
-	PayloadJson   string                 `protobuf:"bytes,4,opt,name=payload_json,json=payloadJson,proto3" json:"payload_json,omitempty"`
-	Status        string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
-	Attempt       int32                  `protobuf:"varint,6,opt,name=attempt,proto3" json:"attempt,omitempty"`
-	MaxAttempts   int32                  `protobuf:"varint,7,opt,name=max_attempts,json=maxAttempts,proto3" json:"max_attempts,omitempty"`
-	LastError     string                 `protobuf:"bytes,8,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
-	CreatedAtUnix int64                  `protobuf:"varint,9,opt,name=created_at_unix,json=createdAtUnix,proto3" json:"created_at_unix,omitempty"`
-	UpdatedAtUnix int64                  `protobuf:"varint,10,opt,name=updated_at_unix,json=updatedAtUnix,proto3" json:"updated_at_unix,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	JobId           string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Queue           string                 `protobuf:"bytes,2,opt,name=queue,proto3" json:"queue,omitempty"`
+	Type            string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`
+	PayloadJson     string                 `protobuf:"bytes,4,opt,name=payload_json,json=payloadJson,proto3" json:"payload_json,omitempty"`
+	Status          string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	Attempt         int32                  `protobuf:"varint,6,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	MaxAttempts     int32                  `protobuf:"varint,7,opt,name=max_attempts,json=maxAttempts,proto3" json:"max_attempts,omitempty"`
+	LastError       string                 `protobuf:"bytes,8,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	CreatedAtUnix   int64                  `protobuf:"varint,9,opt,name=created_at_unix,json=createdAtUnix,proto3" json:"created_at_unix,omitempty"`
+	UpdatedAtUnix   int64                  `protobuf:"varint,10,opt,name=updated_at_unix,json=updatedAtUnix,proto3" json:"updated_at_unix,omitempty"`
+	CreatedAtUnixMs int64                  `protobuf:"varint,11,opt,name=created_at_unix_ms,json=createdAtUnixMs,proto3" json:"created_at_unix_ms,omitempty"`
+	UpdatedAtUnixMs int64                  `protobuf:"varint,12,opt,name=updated_at_unix_ms,json=updatedAtUnixMs,proto3" json:"updated_at_unix_ms,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Job) Reset() {
@@ -457,6 +459,20 @@ func (x *Job) GetUpdatedAtUnix() int64 {
 	return 0
 }
 
+func (x *Job) GetCreatedAtUnixMs() int64 {
+	if x != nil {
+		return x.CreatedAtUnixMs
+	}
+	return 0
+}
+
+func (x *Job) GetUpdatedAtUnixMs() int64 {
+	if x != nil {
+		return x.UpdatedAtUnixMs
+	}
+	return 0
+}
+
 var File_proto_jetqueue_proto protoreflect.FileDescriptor
 
 const file_proto_jetqueue_proto_rawDesc = "" +
@@ -480,7 +496,7 @@ const file_proto_jetqueue_proto_rawDesc = "" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\"8\n" +
 	"\x10ListJobsResponse\x12$\n" +
-	"\x04jobs\x18\x01 \x03(\v2\x10.jetqueue.v1.JobR\x04jobs\"\xad\x02\n" +
+	"\x04jobs\x18\x01 \x03(\v2\x10.jetqueue.v1.JobR\x04jobs\"\x87\x03\n" +
 	"\x03Job\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x14\n" +
 	"\x05queue\x18\x02 \x01(\tR\x05queue\x12\x12\n" +
@@ -493,7 +509,9 @@ const file_proto_jetqueue_proto_rawDesc = "" +
 	"last_error\x18\b \x01(\tR\tlastError\x12&\n" +
 	"\x0fcreated_at_unix\x18\t \x01(\x03R\rcreatedAtUnix\x12&\n" +
 	"\x0fupdated_at_unix\x18\n" +
-	" \x01(\x03R\rupdatedAtUnix2\xe2\x01\n" +
+	" \x01(\x03R\rupdatedAtUnix\x12+\n" +
+	"\x12created_at_unix_ms\x18\v \x01(\x03R\x0fcreatedAtUnixMs\x12+\n" +
+	"\x12updated_at_unix_ms\x18\f \x01(\x03R\x0fupdatedAtUnixMs2\xe2\x01\n" +
 	"\bJetQueue\x12J\n" +
 	"\tSubmitJob\x12\x1d.jetqueue.v1.SubmitJobRequest\x1a\x1e.jetqueue.v1.SubmitJobResponse\x12A\n" +
 	"\x06GetJob\x12\x1a.jetqueue.v1.GetJobRequest\x1a\x1b.jetqueue.v1.GetJobResponse\x12G\n" +
